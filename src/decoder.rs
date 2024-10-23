@@ -1,5 +1,5 @@
-//! A easy to use decoder that takes a `std::io::Read` and outputs `i16` as an iterator.
-use crate::Dsp;
+//! An easy-to-use decoder that takes a `std::io::Read` and outputs `i16` as an iterator.
+use crate::{Dsp, SAMPLES_PER_FRAME};
 use std::io::Read;
 use std::marker::PhantomData;
 
@@ -53,14 +53,29 @@ pub struct Decoder<R: Read, C: Channels> {
 impl<R: Read> Decoder<R, Mono> {
     /// Decode a mono audio stream.
     ///
-    /// `total_frames` is the total amount of frames in the channel.
-    pub fn mono(reader: R, state: Dsp, total_frames: u32) -> Self {
+    /// `frames` is the amount of frames in the channel.
+    pub fn mono(reader: R, state: Dsp, frames: u32) -> Self {
         Self {
             left_reader: reader,
             right_reader: None,
             left_state: state,
             right_state: None,
-            frames_remaing: total_frames,
+            frames_remaing: frames,
+            buffer: Vec::with_capacity(14),
+            _phantom_data: PhantomData,
+        }
+    }
+
+    /// Decode a mono audio stream.
+    ///
+    /// `samples` is the amount of samples in the channel.
+    pub fn mono_samples(reader: R, state: Dsp, samples: u32) -> Self {
+        Self {
+            left_reader: reader,
+            right_reader: None,
+            left_state: state,
+            right_state: None,
+            frames_remaing: samples.div_ceil(SAMPLES_PER_FRAME),
             buffer: Vec::with_capacity(14),
             _phantom_data: PhantomData,
         }
@@ -70,20 +85,41 @@ impl<R: Read> Decoder<R, Mono> {
 impl<R: Read> Decoder<R, Stereo> {
     /// Decode a stereo audio stream where each channel has their own buffer.
     ///
-    /// `total_frames` is the total amount of frames in one channel.
+    /// `channel_frames` is the amount of frames in *one* channel.
     pub fn stereo(
         left_reader: R,
         left_state: Dsp,
         right_reader: R,
         right_state: Dsp,
-        total_frames: u32,
+        channel_frames: u32,
     ) -> Self {
         Self {
             left_reader,
             right_reader: Some(right_reader),
             left_state,
             right_state: Some(right_state),
-            frames_remaing: total_frames,
+            frames_remaing: channel_frames,
+            buffer: Vec::with_capacity(28),
+            _phantom_data: PhantomData,
+        }
+    }
+
+    /// Decode a stereo audio stream where each channel has their own buffer.
+    ///
+    /// `channel_samples` is the amount of samples in *one* channel.
+    pub fn stereo_samples(
+        left_reader: R,
+        left_state: Dsp,
+        right_reader: R,
+        right_state: Dsp,
+        channel_samples: u32,
+    ) -> Self {
+        Self {
+            left_reader,
+            right_reader: Some(right_reader),
+            left_state,
+            right_state: Some(right_state),
+            frames_remaing: channel_samples.div_ceil(SAMPLES_PER_FRAME),
             buffer: Vec::with_capacity(28),
             _phantom_data: PhantomData,
         }
@@ -93,27 +129,39 @@ impl<R: Read> Decoder<R, Stereo> {
 impl<R: Read> Decoder<R, StereoInterleaved> {
     /// Decode a stereo audio stream interleaved per frame.
     ///
-    /// `total_frames` is the total amount of frames for both channels.
-    ///
-    /// # Panics
-    /// Will panic if `total_frames` is not a multiple of 2.
+    /// `channel_frames` is the amount of frames in *one* channel.
     pub fn interleaved_stereo(
         reader: R,
         left_state: Dsp,
         right_state: Dsp,
-        total_frames: u32,
+        channel_frames: u32,
     ) -> Self {
-        assert_eq!(
-            total_frames % 2,
-            0,
-            "Total frames needs to be a multiple of 2"
-        );
         Self {
             left_reader: reader,
             right_reader: None,
             left_state,
             right_state: Some(right_state),
-            frames_remaing: total_frames,
+            frames_remaing: channel_frames * 2,
+            buffer: Vec::with_capacity(28),
+            _phantom_data: PhantomData,
+        }
+    }
+
+    /// Decode a stereo audio stream interleaved per frame.
+    ///
+    /// `channel_samples` is the amount of samples in *one* channel.
+    pub fn interleaved_stereo_samples(
+        reader: R,
+        left_state: Dsp,
+        right_state: Dsp,
+        channel_samples: u32,
+    ) -> Self {
+        Self {
+            left_reader: reader,
+            right_reader: None,
+            left_state,
+            right_state: Some(right_state),
+            frames_remaing: channel_samples.div_ceil(SAMPLES_PER_FRAME) * 2,
             buffer: Vec::with_capacity(28),
             _phantom_data: PhantomData,
         }
@@ -130,7 +178,9 @@ impl<R: Read> Iterator for Decoder<R, Mono> {
             if let Err(e) = result {
                 return Some(Err(e));
             };
-            let samples = self.left_state.decode_frame(frame);
+            let mut samples = self.left_state.decode_frame(frame);
+            // Reverse the samples as they are output in the wrong order
+            samples.as_mut_slice().reverse();
             self.buffer.extend_from_slice(&samples);
             self.frames_remaing -= 1;
         }
@@ -157,16 +207,18 @@ impl<R: Read> Iterator for Decoder<R, Stereo> {
             if let Err(e) = result {
                 return Some(Err(e));
             };
-            let l = self.left_state.decode_frame(left_frame);
-            let r = self
+            let left = self.left_state.decode_frame(left_frame);
+            let right = self
                 .right_state
                 .as_mut()
                 .unwrap_or_else(|| unreachable!())
                 .decode_frame(right_frame);
+            // Reverse samples and interleave
             self.buffer.extend_from_slice(&[
-                l[0], r[0], l[1], r[1], l[2], r[2], l[3], r[3], l[4], r[4], l[5], r[5], l[6], r[6],
-                l[7], r[7], l[8], r[8], l[9], r[9], l[10], r[10], l[11], r[11], l[12], r[12],
-                l[13], r[13],
+                left[13], right[13], left[12], right[12], left[11], right[11], left[10], right[10],
+                left[9], right[9], left[8], right[8], left[7], right[7], left[6], right[6],
+                left[5], right[5], left[4], right[4], left[3], right[3], left[2], right[2],
+                left[1], right[1], left[0], right[0],
             ]);
             self.frames_remaing -= 1;
         }
@@ -189,16 +241,18 @@ impl<R: Read> Iterator for Decoder<R, StereoInterleaved> {
             if let Err(e) = result {
                 return Some(Err(e));
             };
-            let l = self.left_state.decode_frame(left_frame);
-            let r = self
+            let left = self.left_state.decode_frame(left_frame);
+            let right = self
                 .right_state
                 .as_mut()
                 .unwrap_or_else(|| unreachable!())
                 .decode_frame(right_frame);
+            // Reverse samples and interleave
             self.buffer.extend_from_slice(&[
-                l[0], r[0], l[1], r[1], l[2], r[2], l[3], r[3], l[4], r[4], l[5], r[5], l[6], r[6],
-                l[7], r[7], l[8], r[8], l[9], r[9], l[10], r[10], l[11], r[11], l[12], r[12],
-                l[13], r[13],
+                left[13], right[13], left[12], right[12], left[11], right[11], left[10], right[10],
+                left[9], right[9], left[8], right[8], left[7], right[7], left[6], right[6],
+                left[5], right[5], left[4], right[4], left[3], right[3], left[2], right[2],
+                left[1], right[1], left[0], right[0],
             ]);
             self.frames_remaing -= 2;
         }

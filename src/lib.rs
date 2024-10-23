@@ -22,7 +22,7 @@ impl Dsp {
     ///
     /// Note: the frames need to be parsed sequentially as the hist1 and hist2 values
     /// are updated every frame.
-    pub fn decode_frame(&mut self, frame: [u8; 8]) -> [i16; 14] {
+    pub fn decode_frame(&mut self, frame: [u8; FRAME_SIZE]) -> [i16; 14] {
         let header = frame[0];
 
         let scale = 1i32 << (header & 0xF);
@@ -63,6 +63,8 @@ impl Dsp {
 
 /// The amount of samples in a single frame
 pub const SAMPLES_PER_FRAME: u32 = 14;
+/// The size of one frame in bytes
+pub const FRAME_SIZE: usize = 8;
 
 /// Table to convert a nibble to an [`i32`].
 const NIBBLE_TO_S8: [i32; 0x10] = [0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1];
